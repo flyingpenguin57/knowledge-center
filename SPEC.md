@@ -1,137 +1,138 @@
-# 知识库 - 文档解析 RAG 服务
+# 知识库 RAG 系统规格
 
 ## 1. 项目概述
 
-- **项目类型**: Web 文档解析 + RAG 检索服务
-- **核心功能**: 用户上传本地文档 → 存储到 MinIO → 调用 MinerU 解析 → 预览解析结果（Markdown）
-- **目标用户**: 需要将本地文档（PDF/Word/PPT/图片）解析并用于 RAG 知识库的个人或团队
+- **项目名称**: 知识库 RAG 系统
+- **核心功能**: 文档上传 → MinerU 解析 → Chunk 切分 → 向量存储 → RAG 问答
+- **目标用户**: 需要私有知识库问答的个人或团队
 
 ## 2. 技术架构
 
 ```
-前端 (React + Vite)
+前端 (React + Vite + Ant Design)
     │
-    │  上传文件 / 配置 Token
+    │  HTTP / WebSocket
     ▼
 后端 (FastAPI)
-    │
-    ├──► MinIO (文件存储)
-    │
-    └──► MinerU API (文档解析) ◄─── Token
+    ├── PostgreSQL     用户账户、文档记录、Chunk 元数据
+    ├── MinIO         原始文件持久化
+    ├── light-embedding   文本向量化
+    ├── Qdrant        向量存储 + 检索
+    ├── MinerU (云)   文档结构化解析
+    └── LLM (用户配置)  答案生成
 ```
 
-## 3. 技术栈
+## 3. 中间件地址（默认）
 
-| 层级 | 技术 |
+| 服务 | 地址 |
 |------|------|
-| 前端 | React 18 + Vite + Axios + Ant Design |
-| 后端 | Python 3.11 + FastAPI + Uvicorn |
-| 文件存储 | MinIO (S3 兼容) |
-| 文档解析 | MinerU 精准解析 API v4 |
+| PostgreSQL | localhost:5432 |
+| MinIO | localhost:9000 (Console :9001) |
+| Qdrant | localhost:6333 |
+| light-embedding | localhost:8080 |
+| MinerU | 云服务 |
 
-## 4. 功能列表
+## 4. 数据模型
 
-### 4.1 Token 管理
-- 前端界面配置 MinerU API Token
-- Token 存储在浏览器 localStorage
-- 支持随时修改和保存
-
-### 4.2 文件上传
-- 支持拖拽上传和点击选择
-- 支持格式: PDF, DOC, DOCX, PPT, PPTX, XLS, XLSX, 图片(PNG/JPG/JPEG)
-- 文件大小限制: ≤200MB（MinIO 限制）
-- 显示上传进度
-- 文件列表管理（上传时间、文件名、状态）
-
-### 4.3 文档解析
-- 上传后自动触发 MinerU 解析
-- 支持选择解析模型: pipeline / vlm
-- 解析状态轮询: pending → running → done/failed
-- 实时显示解析进度（页数）
-
-### 4.4 结果预览
-- 解析完成后显示 Markdown 格式结果
-- 支持原始文档和解析结果对照
-- 复制 Markdown 内容
-
-### 4.5 MinIO 配置
-- 后端连接自己的 MinIO 服务
-- 配置文件存储桶名称
-
-## 5. API 设计
-
-### 后端接口
-
-#### 配置
-- `GET /api/config` - 获取 MinIO 配置（桶名等，不含密钥）
-- `PUT /api/config` - 更新 MinIO 连接配置
-
-#### 文件操作
-- `POST /api/upload` - 上传文件到 MinIO
-- `GET /api/files` - 获取已上传文件列表
-- `DELETE /api/files/{filename}` - 删除文件
-
-#### 解析任务
-- `POST /api/parse` - 提交文件到 MinerU 解析
-  - Body: `{ filename: string, model_version: "pipeline" | "vlm" }`
-  - Returns: `{ task_id: string }`
-- `GET /api/parse/{task_id}` - 查询解析状态
-- `GET /api/parse/{task_id}/result` - 获取解析结果（Markdown）
-
-## 6. 数据模型
-
-### FileRecord（文件记录）
-```python
-{
-    "filename": str,       # 文件名
-    "upload_time": str,    # ISO 时间戳
-    "size": int,          # 字节
-    "minio_key": str,     # MinIO 对象路径
-    "parse_state": str,    # none / pending / running / done / failed
-    "task_id": str | None,
-    "error": str | None
-}
+### User
+```
+id, username, hashed_password, full_name, is_active, created_at
 ```
 
-## 7. 环境变量
-
-### 后端 (.env)
+### Document
 ```
-MINIO_ENDPOINT=localhost:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_BUCKET=knowledge-center
-MINERU_API_URL=https://mineru.net/api/v4/extract/task
+id, user_id (FK), minio_key, filename, size,
+parse_state (none/pending/running/done/failed),
+markdown_content, chunk_count, upload_time, updated_at
 ```
 
-## 8. 项目结构
-
+### DocumentChunk
 ```
-knowledge-center/
-├── frontend/                 # React 前端
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── services/
-│   │   └── App.tsx
-│   ├── package.json
-│   └── vite.config.ts
-├── backend/                  # Python 后端
-│   ├── main.py
-│   ├── config.py
-│   ├── minio_client.py
-│   ├── mineru_client.py
-│   └── requirements.txt
-├── SPEC.md
-└── README.md
+id, document_id (FK), user_id, chunk_order,
+content, char_count, qdrant_id, created_at
 ```
 
-## 9. 验收标准
+### Config
+```
+key, value
+```
+以 key 存储多租户配置（user_id 为后缀，如 mineru_token_1, llm_base_url_1）
 
-1. ✅ 前端可以配置并保存 MinerU Token（localStorage）
-2. ✅ 前端可以上传文件到后端，后端存入 MinIO
-3. ✅ 前端可以查看已上传文件列表
-4. ✅ 上传后自动提交 MinerU 解析，显示解析进度
-5. ✅ 解析完成后前端可预览 Markdown 结果
-6. ✅ 所有状态（上传进度、解析进度）实时更新
-7. ✅ 支持 vlm 和 pipeline 两种模型选择
+### ParseTask
+```
+task_id, user_id, minio_key, filename,
+model_version, state, full_zip_url, markdown_content,
+error, created_at, updated_at
+```
+
+## 5. API 路由
+
+### 认证
+| 方法 | 路径 | 鉴权 |
+|------|------|------|
+| POST | /api/auth/register | 否 |
+| POST | /api/auth/login | 否 |
+| GET | /api/auth/me | 是 |
+
+### 文档
+| 方法 | 路径 | 鉴权 |
+|------|------|------|
+| POST | /api/documents/upload | 是 |
+| GET | /api/documents | 是 |
+| DELETE | /api/documents/{id} | 是 |
+| POST | /api/documents/{id}/parse | 是 |
+| GET | /api/documents/{id}/detail | 是 |
+
+### RAG
+| 方法 | 路径 | 鉴权 |
+|------|------|------|
+| POST | /api/rag/chat | 是 |
+| POST | /api/rag/retrieve | 是 |
+
+### 配置
+| 方法 | 路径 | 鉴权 |
+|------|------|------|
+| PUT | /api/config/llm | 是 |
+| GET | /api/config/llm | 是 |
+| PUT | /api/config/mineru | 是 |
+| GET | /api/config/mineru | 是 |
+
+## 6. 核心流程
+
+### 文档解析流程
+```
+1. 文件上传 → MinIO
+2. MinerU 解析 → Markdown
+3. LangChain RecursiveCharacterTextSplitter 切分 Chunk
+4. light-embedding 生成向量
+5. Qdrant 批量 upsert 向量 + 元数据
+6. PostgreSQL 保存 Chunk 记录
+```
+
+### RAG 问答流程
+```
+1. 用户问题 → light-embedding 生成向量
+2. Qdrant ANN 检索 top_k Chunks（user_id 隔离）
+3. Chunks 组装为 context prompt → LLM
+4. LLM 生成回答
+5. 前端渲染 Markdown（think 标签折叠展示）
+```
+
+## 7. 前端页面
+
+- **LoginPage** — 注册 / 登录
+- **DocumentsPage** — 上传 / 解析 / 列表 / 预览抽屉
+- **ChatPage** — 问答 / 来源展示 / 思考折叠
+- **SettingsPage** — LLM 配置 / MinerU Token 配置
+
+## 8. 验收标准
+
+- [x] 用户注册 / 登录，JWT 鉴权
+- [x] 文档上传 MinIO
+- [x] MinerU 解析，LangChain Chunk 切分
+- [x] light-embedding 向量化，Qdrant 存储
+- [x] RAG 问答，Markdown 渲染
+- [x] think 标签折叠
+- [x] 来源文档标注
+- [x] 用户级别数据隔离
+- [x] GitHub 推送
